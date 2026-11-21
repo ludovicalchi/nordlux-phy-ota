@@ -151,7 +151,7 @@ Les modèles des plateformes 0 et 1 (MediaTek/Airoha, Silicon Labs) utilisent d'
 
 ## Pilotage local en Bluetooth Mesh (sans cloud)
 
-Avec leur firmware normal, les ampoules sont des nœuds **Bluetooth Mesh SIG standard** : elles annoncent le service Mesh Proxy `0x1828`. Avec la NetKey et l'AppKey du réseau, on peut les piloter directement depuis un PC, sans l'app ni le cloud. Validé le 21/11/2026 sur une Candle DIM (marche/arrêt et luminosité).
+Avec leur firmware normal, les ampoules sont des nœuds **Bluetooth Mesh SIG standard** : elles annoncent le service Mesh Proxy `0x1828`. Avec la NetKey et l'AppKey du réseau, on peut les piloter directement depuis un PC, sans l'app ni le cloud. Testé le 21/11/2026 sur une Candle DIM : **la marche/arrêt fonctionne ; la luminosité standard (Light Lightness) est acquittée mais ne change pas la lumière** (voir les particularités ci-dessous).
 
 ### 1. Récupérer les clés du réseau
 
@@ -185,7 +185,7 @@ C'est utile pour un appareil **supprimé de l'app pendant qu'il était injoignab
 python tools/mesh_onoff.py selftest                                   # vecteurs de test de la spec Mesh
 python tools/mesh_onoff.py status --mac AA:BB:CC:DD:EE:FF --dst 0x2005
 python tools/mesh_onoff.py on  --mac … --dst …
-python tools/mesh_onoff.py bri 40 --mac … --dst … [--transition 1000]
+python tools/mesh_onoff.py bri 40 --mac … --dst … [--transition 1000]   # acquitté mais sans effet sur la Candle DIM
 python tools/mesh_onoff.py cct 3000 --mac … --dst …                   # blanc réglable uniquement, non testé
 ```
 
@@ -211,7 +211,10 @@ python tools/mesh_onoff.py cct 3000 --mac … --dst …                   # blan
 
 ### Particularités observées (Candle DIM `nx00626222`, firmware 27.3)
 
-- **Marche/arrêt et luminosité ne sont pas liés** : après un ON, Light Lightness Get renvoie 0. Il faut suivre les deux états séparément, ou allumer en envoyant directement une luminosité.
+- **La luminosité standard est sans effet.** Light Lightness Set est acquitté, avec un statut 0x824E qui renvoie la valeur demandée, mais la luminosité réelle ne change pas : seul Generic OnOff agit sur la lumière.
+  - L'app règle probablement la luminosité avec un message propre au fabricant, qui reste à identifier, par exemple en déchiffrant une trace HCI prise pendant un réglage dans l'app.
+  - Ne vous fiez pas aux statuts : vérifiez visuellement.
+- Allumée par Generic OnOff, l'ampoule reprend un niveau qu'elle a mémorisé, et Light Lightness Get renvoie alors 0 : l'état Lightness n'est pas relié à l'état réel.
 - Light Lightness Last Get ne reçoit pas de réponse, et Light Lightness Range renvoie 0–0.
 - **Modèles à température fixe** (cctMin = cctMax, par exemple 2700 K) : le serveur CTL renvoie des valeurs incohérentes. N'envoyez pas de CTL Set à ces modèles.
 - Le proxy ne répond pas à « Set Filter Type », mais transmet quand même les statuts.
@@ -225,7 +228,7 @@ python tools/mesh_onoff.py cct 3000 --mac … --dst …                   # blan
 | `tools/nordlux_fetch_fw.py` | Connexion au compte Nordlux, appel getOTAInfo, téléchargement avec vérification MD5. |
 | `tools/nordlux_mesh_keys.py` | Récupération en lecture seule des clés Bluetooth Mesh du compte (NetKey, AppKey, IV index, nœuds). |
 | `tools/mesh_find_node.py` | Écoute des annonces Mesh Proxy : vérification du Network ID, résolution d'une Node Identity en adresse unicast. |
-| `tools/mesh_onoff.py` | Client Mesh minimal via le proxy GATT : marche/arrêt, luminosité, température de couleur. |
+| `tools/mesh_onoff.py` | Client Mesh minimal via le proxy GATT : marche/arrêt (validée) ; luminosité et température de couleur en messages standard (sans effet constaté sur la Candle DIM, voir les réserves). |
 | `tools/parse_btsnoop.py` | Analyse d'un journal HCI Android (`btsnoop_hci.log`) : connexions, table GATT et chronologie ATT pour une MAC. |
 | `tools/nocp.py` | Paquets ACL envoyés et acquittés par le contrôleur (Number of Completed Packets) pour un handle. |
 | `tools/dex_strings.py` | Recherche par regex dans les chaînes des fichiers `.dex` d'une APK. |
