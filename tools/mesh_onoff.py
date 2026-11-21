@@ -4,7 +4,7 @@ IMPORTANT : sur ces ampoules, les commandes SIG standard (Generic OnOff, Light L
 acquittées mais SANS effet sur la lumière. L'app Nordlux détourne Light CTL Set ; utiliser :
   nx-on / nx-off      : CTL Set lightness 0, température 10000 (ON) / 15000 (OFF)      [validé]
   nx-bri <0-100>      : CTL Set lightness = %, température = 800 + teinte %, trans. 400 ms [validé]
-Le bridge Nordlux, s'il est allumé, peut réimposer l'ancien niveau juste après (constaté une fois).
+Le bridge Nordlux n'annule pas ces commandes (testé) ; son proxy GATT est un point d'entrée fiable.
 
 Clés lues dans mesh/mesh_keys.json (cf. nordlux_mesh_keys.py). Adresse source locale et
 numéro de séquence persistés dans mesh/local_state.json (ne jamais réutiliser un SEQ).
