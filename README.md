@@ -198,6 +198,7 @@ python tools/mesh_onoff.py selftest                                    # vecteur
 python tools/mesh_onoff.py nx-on  --mac AA:BB:CC:DD:EE:FF --dst 0x2005   # validé
 python tools/mesh_onoff.py nx-off --mac … --dst …                       # validé
 python tools/mesh_onoff.py nx-bri 40 --mac … --dst … [--cct-pct 100]    # validé
+python tools/mesh_onoff.py nx-cycle --mac … --dst … [--period 5] [--duration 30]   # éteint/allumé en boucle, finit allumé
 python tools/mesh_onoff.py status --mac … --dst …                       # diagnostic (lecture des états standard)
 ```
 
@@ -229,6 +230,7 @@ python tools/mesh_onoff.py status --mac … --dst …                       # di
 - **Bridge Nordlux** : il **n'annule pas** les commandes locales. Test avec le bridge allumé : `nx-bri 30` via son proxy, puis écoute du trafic. La luminosité a tenu ; le bridge a seulement envoyé deux Light CTL Get à l'ampoule, environ 14 s après la commande.
   - Une remontée immédiate a été observée une fois, cause inconnue (l'app ouverte sur le téléphone ?). `--listen` permet d'identifier l'émetteur.
   - Le proxy du bridge est un point d'entrée fiable : il envoie la Secure Network Beacon et accepte les deux modes de filtre. Le proxy de l'ampoule, lui, est parfois introuvable depuis Windows (cache GATT).
+- **Teinte sans effet sur la Candle DIM** (2700 K fixe d'après le catalogue) : alternance 800 ↔ 900 toutes les 5 s pendant 30 s, acquittée par l'ampoule, sans aucun changement visible. `--cct-pct` reste à valider sur un modèle à blanc réglable.
 - Le statut Light CTL reflète le format de l'app : lightness = pourcentage, température = 800–900, ou 10000/15000 après marche/arrêt.
 - Light Lightness Last Get ne reçoit pas de réponse ; Light Lightness Range renvoie 0–0 ; Light CTL Temperature Range renvoie des valeurs incohérentes.
 - Dans l'app, l'ampoule ne se pilote qu'en mode « Bluetooth d'abord ». Elle ne répond pas en mode « Bridge d'abord ».

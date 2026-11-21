@@ -13,6 +13,7 @@ Usage (--mac = proxy BLE, --dst = adresse unicast du nœud) :
   python mesh_onoff.py nx-on  --mac AA:BB:CC:DD:EE:FF --dst 0x2005
   python mesh_onoff.py nx-off --mac ... --dst ...
   python mesh_onoff.py nx-bri 40 --mac ... --dst ... [--cct-pct 100] [--listen 15]
+  python mesh_onoff.py nx-cycle --mac ... --dst ... [--period 5] [--duration 30]   # éteint/allumé en boucle, finit allumé
   python mesh_onoff.py status --mac ... --dst ...      # diagnostic : états standard (sans lien avec la lumière)
   python mesh_onoff.py on|off|bri|cct|test|test-bri    # commandes standard, diagnostic seulement
   python mesh_onoff.py selftest                        # vecteurs de test de la spécification Mesh
@@ -293,6 +294,21 @@ async def run(args):
                 + bytes([trans_byte, 0x01])
             return await req("ctl_set", params, label, with_tid=True)
 
+        if args.cmd == "nx-cycle":
+            # Alterne éteint / allumé toutes les --period s pendant --duration s, sur une seule
+            # connexion ; termine toujours allumé.
+            t_end = time.monotonic() + args.duration
+            on = False
+            while time.monotonic() < t_end:
+                t0 = time.monotonic()
+                await nx_ctl(0, 10000 if on else 15000, 0x00,
+                             f"{time.strftime('%H:%M:%S')} {'allumer' if on else 'éteindre'}")
+                on = not on
+                await asyncio.sleep(max(0.0, args.period - (time.monotonic() - t0)))
+            if on:  # la dernière commande envoyée était « éteindre »
+                await nx_ctl(0, 10000, 0x00, f"{time.strftime('%H:%M:%S')} allumer (fin)")
+            return
+
         if args.cmd in ("nx-on", "nx-off", "nx-bri"):
             if args.cmd == "nx-on":
                 await nx_ctl(0, 10000, 0x00, "nx allumer")
@@ -361,7 +377,9 @@ async def run(args):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["get", "on", "off", "test", "status", "bri", "cct", "test-bri",
-                                    "nx-on", "nx-off", "nx-bri", "selftest"])
+                                    "nx-on", "nx-off", "nx-bri", "nx-cycle", "selftest"])
+    ap.add_argument("--period", type=float, default=5, help="nx-cycle : durée de chaque état éteint/allumé (s)")
+    ap.add_argument("--duration", type=float, default=30, help="nx-cycle : durée totale (s)")
     ap.add_argument("--cct-pct", type=int, default=100,
                     help="nx-bri : teinte en %% (l'app transmet 800 + pourcentage) ; 100 par défaut")
     ap.add_argument("value", nargs="?", type=float, help="bri : pourcentage 0–100 ; cct : kelvins")
