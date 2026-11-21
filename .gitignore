@@ -1,0 +1,20 @@
+# Firmwares (propriété Nordlux/Yankon) et journaux de flashage
+firmware/
+*.hex
+*.hex16
+*.hexe16
+*.bin
+
+# APK, sources décompilées, traces et bugreports (données personnelles)
+*.apk
+apk/
+src/
+*.log
+btsnoop*
+bugreport*.zip
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+.venv/
