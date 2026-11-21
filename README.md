@@ -198,7 +198,7 @@ python tools/mesh_onoff.py selftest                                    # vecteur
 python tools/mesh_onoff.py nx-on  --mac AA:BB:CC:DD:EE:FF --dst 0x2005   # validé
 python tools/mesh_onoff.py nx-off --mac … --dst …                       # validé
 python tools/mesh_onoff.py nx-bri 40 --mac … --dst … [--cct-pct 100]    # validé
-python tools/mesh_onoff.py nx-cycle --mac … --dst … [--period 5] [--duration 30]   # éteint/allumé en boucle, finit allumé
+python tools/mesh_onoff.py nx-cycle --mac … --dst … [--period 5] [--duration 30]   # éteint/allumé en boucle, finit allumé ; validé
 python tools/mesh_onoff.py status --mac … --dst …                       # diagnostic (lecture des états standard)
 ```
 
