@@ -1,5 +1,7 @@
 # nordlux-phy-ota
 
+> Contenu : récupération OTA d'une ampoule bloquée dans le bootloader, et [pilotage local en Bluetooth Mesh](#pilotage-local-en-bluetooth-mesh-sans-cloud).
+
 Récupération par Bluetooth d'une ampoule **Nordlux Smart Light** (puce Phyplus **PHY6222**) restée bloquée dans son bootloader OTA après une mise à jour ratée depuis l'app Nordlux. Testé avec succès le 21/11/2026 sur une « Candle DIM » (`nx0062`), firmware v27.3, depuis Windows 11 (adaptateur Intel, bleak 2.1.1).
 
 > Le firmware n'est pas inclus dans ce dépôt (il appartient à Nordlux/Yankon). Le script `nordlux_fetch_fw.py` le télécharge avec **votre** compte Nordlux, comme le fait l'app.
@@ -147,6 +149,73 @@ Extrait de `assets/device/device_type.json` (app v2.6.2) :
 
 Les modèles des plateformes 0 et 1 (MediaTek/Airoha, Silicon Labs) utilisent d'autres procédures OTA, non couvertes ici.
 
+## Pilotage local en Bluetooth Mesh (sans cloud)
+
+Avec leur firmware normal, les ampoules sont des nœuds **Bluetooth Mesh SIG standard** : elles annoncent le service Mesh Proxy `0x1828`. Avec la NetKey et l'AppKey du réseau, on peut les piloter directement depuis un PC, sans l'app ni le cloud. Validé le 21/11/2026 sur une Candle DIM (marche/arrêt et luminosité).
+
+### 1. Récupérer les clés du réseau
+
+```bash
+python tools/nordlux_mesh_keys.py    # NORDLUX_USER, NORDLUX_PASSWORD, NORDLUX_ACCESS_KEY_ID, NORDLUX_SECRET_KEY
+```
+
+Le script se connecte au compte, puis appelle `smartLight/api/sync/syncHouse` **sans `houseList` ni `syncTime`**. Dans ce cas, le serveur renvoie la liste des maisons sans rien modifier. L'ancien endpoint `v1/house/list` refuse le jeton de l'API v2.
+
+Il appelle ensuite `smartLight/api/house/getHouseInfo` pour chaque maison. La réponse contient `netKey`, `appKeyValue`, `ivIndex` et un `meshJson`, avec les nœuds connus, leur adresse unicast et leur `deviceKey`.
+
+Les résultats sont écrits dans `mesh/` (`house_<id>.json` et `mesh_keys.json`). **Ce dossier contient les clés en clair** et il est exclu par le `.gitignore`. Ne le publiez pas : ces clés permettent de commander vos lumières à portée radio.
+
+### 2. Trouver l'adresse d'un nœud
+
+```bash
+python tools/mesh_find_node.py --scan 15
+```
+
+L'outil écoute seulement, sans rien envoyer, et traite deux types d'annonces :
+- **Network ID** : vérifie que l'appareil appartient bien au réseau, via k3(NetKey).
+- **Node Identity** : retrouve son adresse unicast. Il essaie toutes les adresses jusqu'à trouver celle qui donne le hachage annoncé, calculé ainsi :
+  - IdentityKey = k1(NetKey, s1("nkik"), "id128"‖01) ;
+  - Hash = AES(IdentityKey, 00×6 ‖ Random ‖ Address)[8:16].
+
+C'est utile pour un appareil **supprimé de l'app pendant qu'il était injoignable**, par exemple bloqué dans le bootloader. Il a disparu du cloud mais il est toujours provisionné. Sa `deviceKey` est perdue : on ne peut plus le reconfigurer (liaisons, abonnements), mais l'AppKey suffit pour les messages Generic et Light.
+
+### 3. Piloter
+
+```bash
+python tools/mesh_onoff.py selftest                                   # vecteurs de test de la spec Mesh
+python tools/mesh_onoff.py status --mac AA:BB:CC:DD:EE:FF --dst 0x2005
+python tools/mesh_onoff.py on  --mac … --dst …
+python tools/mesh_onoff.py bri 40 --mac … --dst … [--transition 1000]
+python tools/mesh_onoff.py cct 3000 --mac … --dst …                   # blanc réglable uniquement, non testé
+```
+
+`--mac` est l'adresse BLE du nœud qui sert de proxy (l'ampoule elle-même, par exemple). `--dst` est l'adresse unicast de l'élément principal du nœud à piloter.
+
+- **Adresse source et numéro de séquence** : le script émet avec l'adresse locale **0x7F01**, différente de celle du provisioner de l'app, pour ne pas perturber son compteur anti-rejeu. Le numéro de séquence est conservé dans `mesh/local_state.json`.
+  - Ne réutilisez jamais un numéro de séquence.
+  - Si ce fichier est perdu, changez l'adresse source.
+- **Implémentation** :
+  - Proxy PDU sur `0x2ADD` (écriture) et `0x2ADE` (notification) ;
+  - clés dérivées avec k2 (NID, EncryptionKey, PrivacyKey) et k4 (AID) ;
+  - chiffrement AES-CCM, avec un MIC de 4 octets pour l'accès et le réseau, 8 octets pour la configuration du proxy ;
+  - IV index lu dans la Secure Network Beacon envoyée par le proxy ;
+  - filtre du proxy passé en liste de rejet vide.
+
+| Modèle | Get | Set (acquitté) | Status |
+|---|---|---|---|
+| Generic OnOff | 82 01 | 82 02 | 82 04 |
+| Light Lightness | 82 4B | 82 4C | 82 4E |
+| Light Lightness Last / Range | 82 53 / 82 57 | — | 82 54 / 82 58 |
+| Light CTL | 82 5D | 82 5E | 82 60 |
+| Light CTL Temperature Range | 82 62 | — | 82 63 |
+
+### Particularités observées (Candle DIM `nx00626222`, firmware 27.3)
+
+- **Marche/arrêt et luminosité ne sont pas liés** : après un ON, Light Lightness Get renvoie 0. Il faut suivre les deux états séparément, ou allumer en envoyant directement une luminosité.
+- Light Lightness Last Get ne reçoit pas de réponse, et Light Lightness Range renvoie 0–0.
+- **Modèles à température fixe** (cctMin = cctMax, par exemple 2700 K) : le serveur CTL renvoie des valeurs incohérentes. N'envoyez pas de CTL Set à ces modèles.
+- Le proxy ne répond pas à « Set Filter Type », mais transmet quand même les statuts.
+
 ## Outils
 
 | Script | Rôle |
@@ -154,6 +223,9 @@ Les modèles des plateformes 0 et 1 (MediaTek/Airoha, Silicon Labs) utilisent d'
 | `tools/phy_ota.py` | Flasheur OTA PHY62xx (bleak), avec `--dry-run`. |
 | `tools/phy_ota_diag.py` | Diagnostic : envoie les données paquet par paquet et vérifie que l'ampoule répond (lecture du CCCD) ; n'envoie jamais de reboot. |
 | `tools/nordlux_fetch_fw.py` | Connexion au compte Nordlux, appel getOTAInfo, téléchargement avec vérification MD5. |
+| `tools/nordlux_mesh_keys.py` | Récupération en lecture seule des clés Bluetooth Mesh du compte (NetKey, AppKey, IV index, nœuds). |
+| `tools/mesh_find_node.py` | Écoute des annonces Mesh Proxy : vérification du Network ID, résolution d'une Node Identity en adresse unicast. |
+| `tools/mesh_onoff.py` | Client Mesh minimal via le proxy GATT : marche/arrêt, luminosité, température de couleur. |
 | `tools/parse_btsnoop.py` | Analyse d'un journal HCI Android (`btsnoop_hci.log`) : connexions, table GATT et chronologie ATT pour une MAC. |
 | `tools/nocp.py` | Paquets ACL envoyés et acquittés par le contrôleur (Number of Completed Packets) pour un handle. |
 | `tools/dex_strings.py` | Recherche par regex dans les chaînes des fichiers `.dex` d'une APK. |
