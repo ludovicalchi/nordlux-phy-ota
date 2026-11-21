@@ -1,16 +1,20 @@
-"""Client Bluetooth Mesh minimal via GATT Proxy (bleak) : Generic OnOff Get/Set vers un nœud.
+"""Client Bluetooth Mesh minimal via GATT Proxy (bleak) pour les ampoules Nordlux Smart (PHY6222).
+
+IMPORTANT : sur ces ampoules, les commandes SIG standard (Generic OnOff, Light Lightness) sont
+acquittées mais SANS effet sur la lumière. L'app Nordlux détourne Light CTL Set ; utiliser :
+  nx-on / nx-off      : CTL Set lightness 0, température 10000 (ON) / 15000 (OFF)      [validé]
+  nx-bri <0-100>      : CTL Set lightness = %, température = 800 + teinte %, trans. 400 ms [validé]
+Le bridge Nordlux, s'il est allumé, peut réimposer l'ancien niveau juste après (constaté une fois).
 
 Clés lues dans mesh/mesh_keys.json (cf. nordlux_mesh_keys.py). Adresse source locale et
 numéro de séquence persistés dans mesh/local_state.json (ne jamais réutiliser un SEQ).
 
-Usage :
-  python mesh_onoff.py get --mac AA:BB:CC:DD:EE:FF --dst 0x2005   # MAC du proxy, adresse unicast du nœud
-  python mesh_onoff.py on|off --mac ... --dst ...
-  python mesh_onoff.py test --mac ... --dst ...        # état, ON, OFF, puis retour à l'état initial
-  python mesh_onoff.py status --mac ... --dst ...      # luminosité, dernière valeur, plages, CTL
-  python mesh_onoff.py bri 40 --mac ... --dst ... [--transition 1000]
-  python mesh_onoff.py cct 3000 --mac ... --dst ...    # ampoules à blanc réglable uniquement (non testé)
-  python mesh_onoff.py test-bri --mac ... --dst ...    # 100/50/20/5 %, puis restauration
+Usage (--mac = proxy BLE, --dst = adresse unicast du nœud) :
+  python mesh_onoff.py nx-on  --mac AA:BB:CC:DD:EE:FF --dst 0x2005
+  python mesh_onoff.py nx-off --mac ... --dst ...
+  python mesh_onoff.py nx-bri 40 --mac ... --dst ... [--cct-pct 100] [--listen 15]
+  python mesh_onoff.py status --mac ... --dst ...      # diagnostic : états standard (sans lien avec la lumière)
+  python mesh_onoff.py on|off|bri|cct|test|test-bri    # commandes standard, diagnostic seulement
   python mesh_onoff.py selftest                        # vecteurs de test de la spécification Mesh
 """
 import argparse, asyncio, json, os, sys, time
@@ -237,15 +241,22 @@ async def run(args):
                     continue
                 if want(r):
                     return r
-                print(f"   reçu {r[0]} de 0x{(r[1] or 0):04X} : {r[3].hex()}")
+                extra = f" [{describe(r[3])}]" if r[0] == "access" and r[3][:2] in (b"\x82\x04", b"\x82\x4e", b"\x82\x60") else ""
+                print(f"   {time.strftime('%H:%M:%S')} reçu {r[0]} 0x{(r[1] or 0):04X} -> 0x{(r[2] or 0):04X} : {r[3].hex()}{extra}")
             return None
 
         await recv(2.0, lambda r: False)          # balise réseau envoyée à la connexion -> IV index
 
-        # Filtre du proxy : liste de rejet vide = tout transmettre
-        await client.write_gatt_char(PROXY_IN, mesh.proxy_cfg(b"\x00\x01"), response=False); save()
-        r = await recv(3, lambda r: r[0] == "proxycfg")
-        print("filtre proxy :", f"statut {r[3].hex()}" if r else "pas de réponse (on continue)")
+        # Filtre du proxy. "reject" : liste de rejet vide = tout transmettre.
+        # "accept" : liste d'autorisation contenant notre adresse (certains proxys ignorent Set Filter Type).
+        if args.filter == "reject":
+            cfgs = [b"\x00\x01"]
+        else:
+            cfgs = [b"\x00\x00", b"\x01" + b"".join(a.to_bytes(2, "big") for a in [src] + args.filter_add)]
+        for c in cfgs:
+            await client.write_gatt_char(PROXY_IN, mesh.proxy_cfg(c), response=False); save()
+            r = await recv(3, lambda r: r[0] == "proxycfg")
+            print(f"filtre proxy ({args.filter}, {c.hex()}) :", f"statut {r[3].hex()}" if r else "pas de réponse")
 
         tid = int.from_bytes(os.urandom(1), "big")
 
@@ -272,6 +283,28 @@ async def run(args):
         async def set_ctl(light, kelvin, label):
             return await req("ctl_set", light.to_bytes(2, "little") + kelvin.to_bytes(2, "little")
                              + (0).to_bytes(2, "little", signed=True) + trans, label, with_tid=True)
+
+        # Commandes "Nordlux" : l'app (MeshElementControl.setOnOffVirtual / setColorTemperatureVirtual)
+        # détourne Light CTL Set : ON = température 10000, OFF = 15000 (lightness 0, transition 0) ;
+        # luminosité = lightness en POURCENTAGE (0-100) + température = 800 + teinte en % (0-100), transition 400 ms ;
+        # délai = roomNum*5 ms (1 pour un appareil seul) -> 1 pas de 5 ms.
+        async def nx_ctl(light_pct, temp, trans_byte, label):
+            params = light_pct.to_bytes(2, "little") + temp.to_bytes(2, "little") + (0).to_bytes(2, "little") \
+                + bytes([trans_byte, 0x01])
+            return await req("ctl_set", params, label, with_tid=True)
+
+        if args.cmd in ("nx-on", "nx-off", "nx-bri"):
+            if args.cmd == "nx-on":
+                await nx_ctl(0, 10000, 0x00, "nx allumer")
+            elif args.cmd == "nx-off":
+                await nx_ctl(0, 15000, 0x00, "nx éteindre")
+            else:
+                await nx_ctl(max(0, min(100, round(args.value))), 800 + max(0, min(100, args.cct_pct)),
+                             transition(400), f"nx luminosité {args.value:g} %, blanc {args.cct_pct} %")
+            if args.listen:
+                print(f"écoute du trafic mesh pendant {args.listen:.0f} s…")
+                await recv(args.listen, lambda r: False)
+            return
 
         onoff = await req("onoff_get", label="état")
         initial_on = onoff["on"] if onoff else None
@@ -327,15 +360,23 @@ async def run(args):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["get", "on", "off", "test", "status", "bri", "cct", "test-bri", "selftest"])
+    ap.add_argument("cmd", choices=["get", "on", "off", "test", "status", "bri", "cct", "test-bri",
+                                    "nx-on", "nx-off", "nx-bri", "selftest"])
+    ap.add_argument("--cct-pct", type=int, default=100,
+                    help="nx-bri : teinte en %% (l'app transmet 800 + pourcentage) ; 100 par défaut")
     ap.add_argument("value", nargs="?", type=float, help="bri : pourcentage 0–100 ; cct : kelvins")
     ap.add_argument("--mac")
     ap.add_argument("--dst", type=lambda s: int(s, 0), help="adresse unicast du nœud (cf. mesh_find_node.py)")
     ap.add_argument("--transition", type=int, help="durée de transition en ms (bri/cct)")
+    ap.add_argument("--listen", type=float, default=0, help="après une commande nx-*, écouter le trafic mesh N s")
+    ap.add_argument("--filter-add", type=lambda s: [int(x, 0) for x in s.split(",")], default=[],
+                    help="adresses supplémentaires pour la liste d'autorisation (ex. 0xC000,0x2005)")
+    ap.add_argument("--filter", choices=["reject", "accept"], default="accept",
+                    help="configuration du filtre du proxy (accept = liste d'autorisation avec notre adresse)")
     a = ap.parse_args()
     # position du TID dans les paramètres : après OnOff (1 o), Lightness (2 o) ou CTL (6 o)
     a.tid_pos = lambda name, params: {"onoff_set": 1, "light_set": 2, "ctl_set": 6}[name]
-    if a.cmd in ("bri", "cct") and a.value is None:
+    if a.cmd in ("bri", "cct", "nx-bri") and a.value is None:
         ap.error(f"{a.cmd} attend une valeur")
     if a.cmd == "selftest":
         print("vecteurs de la spec Mesh :", "OK" if selftest() else "ÉCHEC")

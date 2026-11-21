@@ -151,7 +151,7 @@ Les modèles des plateformes 0 et 1 (MediaTek/Airoha, Silicon Labs) utilisent d'
 
 ## Pilotage local en Bluetooth Mesh (sans cloud)
 
-Avec leur firmware normal, les ampoules sont des nœuds **Bluetooth Mesh SIG standard** : elles annoncent le service Mesh Proxy `0x1828`. Avec la NetKey et l'AppKey du réseau, on peut les piloter directement depuis un PC, sans l'app ni le cloud. Testé le 21/11/2026 sur une Candle DIM : **la marche/arrêt fonctionne ; la luminosité standard (Light Lightness) est acquittée mais ne change pas la lumière** (voir les particularités ci-dessous).
+Avec leur firmware normal, les ampoules sont des nœuds **Bluetooth Mesh SIG standard** : elles annoncent le service Mesh Proxy `0x1828`. Avec la NetKey et l'AppKey du réseau, on peut les piloter directement depuis un PC, sans l'app ni le cloud. Testé le 21/11/2026 sur une Candle DIM : **marche/arrêt et luminosité fonctionnent avec le format propre à l'app** (Light CTL Set détourné, voir « 3. Piloter »). Les commandes standard Generic OnOff et Light Lightness sont acquittées mais sans effet.
 
 ### 1. Récupérer les clés du réseau
 
@@ -181,16 +181,31 @@ C'est utile pour un appareil **supprimé de l'app pendant qu'il était injoignab
 
 ### 3. Piloter
 
+**Les commandes Bluetooth Mesh standard ne pilotent pas la lumière.** Generic OnOff et Light Lightness sont acquittées, avec un statut qui reprend la valeur demandée, mais l'ampoule ne réagit pas.
+
+L'app Nordlux (`MeshElementControl.setOnOffVirtual` / `setColorTemperatureVirtual`) **détourne Light CTL Set**, envoyé à l'élément principal :
+
+| Action | lightness | température | ΔUV | transition | délai |
+|---|---|---|---|---|---|
+| Allumer | 0 | **10000** | 0 | 0 | 5 ms |
+| Éteindre | 0 | **15000** | 0 | 0 | 5 ms |
+| Luminosité / teinte | **pourcentage 0–100** (brut, pas 0–65535) | **800 + teinte en %** (0–100) | 0 | 400 ms | 5 ms |
+
+Le délai vaut `roomNum × 5 ms` (roomNum = 1 pour un appareil seul). Pour une ampoule à température fixe, l'app envoie la teinte 100 %, soit la valeur 900.
+
 ```bash
-python tools/mesh_onoff.py selftest                                   # vecteurs de test de la spec Mesh
-python tools/mesh_onoff.py status --mac AA:BB:CC:DD:EE:FF --dst 0x2005
-python tools/mesh_onoff.py on  --mac … --dst …
-python tools/mesh_onoff.py bri 40 --mac … --dst … [--transition 1000]   # acquitté mais sans effet sur la Candle DIM
-python tools/mesh_onoff.py cct 3000 --mac … --dst …                   # blanc réglable uniquement, non testé
+python tools/mesh_onoff.py selftest                                    # vecteurs de test de la spec Mesh
+python tools/mesh_onoff.py nx-on  --mac AA:BB:CC:DD:EE:FF --dst 0x2005   # validé
+python tools/mesh_onoff.py nx-off --mac … --dst …                       # validé
+python tools/mesh_onoff.py nx-bri 40 --mac … --dst … [--cct-pct 100]    # validé
+python tools/mesh_onoff.py status --mac … --dst …                       # diagnostic (lecture des états standard)
 ```
 
-`--mac` est l'adresse BLE du nœud qui sert de proxy (l'ampoule elle-même, par exemple). `--dst` est l'adresse unicast de l'élément principal du nœud à piloter.
+`--mac` est l'adresse BLE du nœud qui sert de proxy (l'ampoule elle-même, par exemple). `--dst` est l'adresse unicast de l'élément principal du nœud à piloter. Les commandes standard (`on`, `off`, `bri`, `cct`, `test`, `test-bri`) restent disponibles pour le diagnostic, sans effet sur la lumière.
 
+- **Filtre du proxy** : par défaut, le script met le filtre en liste d'autorisation et y ajoute son adresse source (`--filter accept`).
+  - Une ampoule réintégrée par l'app ne transmet plus rien sans cela, et ignore « Set Filter Type » en liste de rejet. Le proxy du bridge accepte les deux modes.
+  - `--filter-add 0xC000,…` ajoute d'autres adresses ; `--listen 15` écoute le trafic après une commande `nx-*`.
 - **Adresse source et numéro de séquence** : le script émet avec l'adresse locale **0x7F01**, différente de celle du provisioner de l'app, pour ne pas perturber son compteur anti-rejeu. Le numéro de séquence est conservé dans `mesh/local_state.json`.
   - Ne réutilisez jamais un numéro de séquence.
   - Si ce fichier est perdu, changez l'adresse source.
@@ -198,8 +213,7 @@ python tools/mesh_onoff.py cct 3000 --mac … --dst …                   # blan
   - Proxy PDU sur `0x2ADD` (écriture) et `0x2ADE` (notification) ;
   - clés dérivées avec k2 (NID, EncryptionKey, PrivacyKey) et k4 (AID) ;
   - chiffrement AES-CCM, avec un MIC de 4 octets pour l'accès et le réseau, 8 octets pour la configuration du proxy ;
-  - IV index lu dans la Secure Network Beacon envoyée par le proxy ;
-  - filtre du proxy passé en liste de rejet vide.
+  - IV index lu dans la Secure Network Beacon envoyée par le proxy.
 
 | Modèle | Get | Set (acquitté) | Status |
 |---|---|---|---|
@@ -211,13 +225,11 @@ python tools/mesh_onoff.py cct 3000 --mac … --dst …                   # blan
 
 ### Particularités observées (Candle DIM `nx00626222`, firmware 27.3)
 
-- **La luminosité standard est sans effet.** Light Lightness Set est acquitté, avec un statut 0x824E qui renvoie la valeur demandée, mais la luminosité réelle ne change pas : seul Generic OnOff agit sur la lumière.
-  - L'app règle probablement la luminosité avec un message propre au fabricant, qui reste à identifier, par exemple en déchiffrant une trace HCI prise pendant un réglage dans l'app.
-  - Ne vous fiez pas aux statuts : vérifiez visuellement.
-- Allumée par Generic OnOff, l'ampoule reprend un niveau qu'elle a mémorisé, et Light Lightness Get renvoie alors 0 : l'état Lightness n'est pas relié à l'état réel.
-- Light Lightness Last Get ne reçoit pas de réponse, et Light Lightness Range renvoie 0–0.
-- **Modèles à température fixe** (cctMin = cctMax, par exemple 2700 K) : le serveur CTL renvoie des valeurs incohérentes. N'envoyez pas de CTL Set à ces modèles.
-- Le proxy ne répond pas à « Set Filter Type », mais transmet quand même les statuts.
+- **Vérifiez visuellement : les statuts ne prouvent rien.** Les serveurs standard mettent à jour leur état et répondent sans toucher à la lumière.
+- **Bridge Nordlux** : avec le bridge allumé, une commande `nx-bri` a fait baisser la luminosité, qui est remontée aussitôt. Le même réglage a tenu une fois le bridge éteint. Le bridge réimpose probablement son propre état, mais ce n'est pas encore confirmé.
+- Le statut Light CTL reflète le format de l'app : lightness = pourcentage, température = 800–900, ou 10000/15000 après marche/arrêt.
+- Light Lightness Last Get ne reçoit pas de réponse ; Light Lightness Range renvoie 0–0 ; Light CTL Temperature Range renvoie des valeurs incohérentes.
+- Dans l'app, l'ampoule ne se pilote qu'en mode « Bluetooth d'abord ». Elle ne répond pas en mode « Bridge d'abord ».
 
 ## Outils
 
@@ -228,7 +240,7 @@ python tools/mesh_onoff.py cct 3000 --mac … --dst …                   # blan
 | `tools/nordlux_fetch_fw.py` | Connexion au compte Nordlux, appel getOTAInfo, téléchargement avec vérification MD5. |
 | `tools/nordlux_mesh_keys.py` | Récupération en lecture seule des clés Bluetooth Mesh du compte (NetKey, AppKey, IV index, nœuds). |
 | `tools/mesh_find_node.py` | Écoute des annonces Mesh Proxy : vérification du Network ID, résolution d'une Node Identity en adresse unicast. |
-| `tools/mesh_onoff.py` | Client Mesh minimal via le proxy GATT : marche/arrêt (validée) ; luminosité et température de couleur en messages standard (sans effet constaté sur la Candle DIM, voir les réserves). |
+| `tools/mesh_onoff.py` | Client Mesh minimal via le proxy GATT. `nx-on`, `nx-off`, `nx-bri` : format de l'app, validé. Commandes standard : diagnostic seulement. |
 | `tools/parse_btsnoop.py` | Analyse d'un journal HCI Android (`btsnoop_hci.log`) : connexions, table GATT et chronologie ATT pour une MAC. |
 | `tools/nocp.py` | Paquets ACL envoyés et acquittés par le contrôleur (Number of Completed Packets) pour un handle. |
 | `tools/dex_strings.py` | Recherche par regex dans les chaînes des fichiers `.dex` d'une APK. |
