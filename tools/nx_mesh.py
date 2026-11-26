@@ -290,3 +290,13 @@ class ProxyLink:
     async def ctl_get(self, dst: int) -> bytes | None:
         """Lecture (sans effet sur la lumière) : utile pour vérifier la liaison."""
         return await self.send(dst, OP_CTL_GET, OP_CTL_STATUS)
+
+    async def nx_read_lightness(self, dst: int) -> int | None:
+        """Luminosité réelle en % (0 = éteinte), d'après la « present lightness » de Light CTL Status.
+
+        Vérifié le 26/11/2026 sur une Candle DIM : 0 éteinte, valeur envoyée une fois allumée, conservée après
+        une coupure de courant. Generic OnOff et Light Lightness, eux, ne reflètent pas la lumière."""
+        r = await self.ctl_get(dst)
+        if r is None or len(r) < 4:
+            return None
+        return int.from_bytes(r[0:2], "little")
