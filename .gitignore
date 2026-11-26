@@ -14,6 +14,9 @@ btsnoop*
 bugreport*.zip
 *.zip
 
+# Clés Bluetooth Mesh, état du SEQ, devKeys des nœuds ajoutés (secrets)
+mesh/
+
 # Python
 __pycache__/
 *.pyc

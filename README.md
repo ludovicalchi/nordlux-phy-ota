@@ -224,6 +224,62 @@ python tools/mesh_onoff.py status --mac … --dst …                       # di
 | Light CTL | 82 5D | 82 5E | 82 60 |
 | Light CTL Temperature Range | 82 62 | — | 82 63 |
 
+### 4. Ajouter ou réinitialiser une ampoule sans l'app
+
+Testé le 26/11/2026 sur une Candle DIM (firmware 27.3) : ajout, pilotage, réinitialisation à distance, puis nouvel ajout.
+
+**Après une réinitialisation, ces ampoules n'utilisent pas le provisioning Bluetooth Mesh standard.** Elles n'annoncent jamais le service `0x1827`. Elles rejoignent seules un réseau d'usine : leur service `0x1828` porte une Node Identity d'un autre réseau.
+
+Leurs données fabricant (société `0x6E78`, 24 octets, cf. `DeviceDescriptionUtil`) se lisent ainsi :
+
+| Octets | Contenu |
+|---|---|
+| 0–3 | type, à l'envers (`0062` pour `nx0062…`) |
+| 5 | puce |
+| 6 et 19 | version (majeure, mineure) |
+| 7–8 et 9–10 | empreintes de la NetKey et de l'AppKey ; `0000` = **clés non configurées** |
+| 11–16 | MAC |
+| 17–18 | adresse unicast actuelle, en little-endian (provisoire après réinitialisation) |
+| 22 | pièce |
+| 23 | somme de contrôle des octets 0–22 |
+
+**Ajout** (`InformationConfigOfDevices2.addToMeshForNewDevice`, `ConfigNodeRequest`). L'app se connecte à l'ampoule et écrit **en clair** 6 messages de 18 octets, espacés d'environ 260 ms :
+- service `4d124bf0-fee0-44bd-947f-e668f1228a9d` ;
+- écriture sur `da3c026f-4f76-48e5-ab29-be11daa3604c` ;
+- réponses JSON en notification sur `3db871af-558c-40ea-bb4f-f9991217a72f`.
+
+```
+43 4D 44 01 21 00 00 <adresse actuelle, 2 o tels qu'annoncés> 08  +  8 octets :
+  1 : 01 NetKey[0..6]          2 : 02 NetKey[7..13]
+  3 : 03 64 NetKey[14..15] <nouvelle adresse LE> <n° de pièce> 64
+  4 : 04 AppKey[0..6]          5 : 05 AppKey[7..13]
+  6 : 06 00 AppKey[14..15] <adresse de publication LE (C000)> 00 00
+```
+
+L'ampoule se configure ensuite seule : liaisons et abonnement au groupe de la maison `C000`. Il n'y a ni échange de clés ni devKey. L'IV index n'est pas transmis (0).
+
+**Réinitialisation à distance** (suppression dans l'app pour les firmwares 18 et plus : `MeshVendorModelControl.resetFastDevice`) :
+- un message vendeur sans réponse, chiffré avec l'AppKey, envoyé à l'élément principal ;
+- opcode `E1` (société `0x1111`, modèle `0x3333`), données `0A 00`, soit l'accès `E1 11 11 0A 00` ;
+- il passe par n'importe quel proxy du réseau ;
+- l'ampoule clignote et revient en « clés non configurées », avec une nouvelle adresse provisoire.
+
+Une variante par connexion GATT directe existe (`ResetDeviceRequest`) : `43 4D 44 01 21 00 00 <adresse> 02 0A 00`.
+
+```bash
+python tools/mesh_provision.py scan                                  # état des clés de chaque ampoule Nordlux à portée
+python tools/mesh_provision.py nx-add --mac AA:BB:CC:DD:EE:FF [--addr 0x7E00] [--room-num 1] [--name Salon]
+python tools/mesh_provision.py nx-reset --mac <proxy> --dst 0x7E00   # réinitialisation à distance
+python tools/mesh_provision.py read-config --mac <proxy> --dst 0x2005  # lecture seule, avec la deviceKey du cloud
+python tools/mesh_provision.py selftest
+```
+
+Particularités :
+- **Adresses :** `nx-add` attribue par défaut une adresse libre entre 0x7E00 et 0x7EFF, hors des adresses connues du cloud. Les ampoules ajoutées sont notées dans `mesh/provisioned.json`.
+- **Visibilité dans l'app :** une ampoule ajoutée ainsi n'apparaît pas dans l'app Nordlux. Pour l'y remettre, réinitialisez-la, puis ajoutez-la depuis l'app.
+- **Méthode standard (`provision`) :** provisioning PB-GATT et configuration SIG, pour des appareils qui annonceraient `0x1827`. Elle n'a pas servi sur ces ampoules. Les messages de configuration avec la devKey, la segmentation et le réassemblage ont été validés en lecture avec `read-config`.
+- **Dépendance :** `mesh_provision.py` utilise le cœur mesh `tools/nx_mesh.py`, le même que l'intégration Home Assistant [ha-nordlux-mesh](https://github.com/ludovicalchi/ha-nordlux-mesh). L'intégration propose aussi l'ajout et la suppression depuis son interface.
+
 ### Particularités observées (Candle DIM `nx00626222`, firmware 27.3)
 
 - **Vérifiez visuellement : les statuts ne prouvent rien.** Les serveurs standard mettent à jour leur état et répondent sans toucher à la lumière.
@@ -245,6 +301,8 @@ python tools/mesh_onoff.py status --mac … --dst …                       # di
 | `tools/nordlux_mesh_keys.py` | Récupération en lecture seule des clés Bluetooth Mesh du compte (NetKey, AppKey, IV index, nœuds). |
 | `tools/mesh_find_node.py` | Écoute des annonces Mesh Proxy : vérification du Network ID, résolution d'une Node Identity en adresse unicast. |
 | `tools/mesh_onoff.py` | Client Mesh minimal via le proxy GATT. `nx-on`, `nx-off`, `nx-bri` : format de l'app, validé. Commandes standard : diagnostic seulement. |
+| `tools/mesh_provision.py` | Ajout d'une ampoule réinitialisée sans l'app (`nx-add`), réinitialisation à distance (`nx-reset`), lecture de configuration avec la devKey (`read-config`), provisioning standard PB-GATT (`provision`). |
+| `tools/nx_mesh.py` | Cœur Bluetooth Mesh (dérivation de clés, PDU, lien proxy) partagé avec l'intégration Home Assistant. |
 | `tools/parse_btsnoop.py` | Analyse d'un journal HCI Android (`btsnoop_hci.log`) : connexions, table GATT et chronologie ATT pour une MAC. |
 | `tools/nocp.py` | Paquets ACL envoyés et acquittés par le contrôleur (Number of Completed Packets) pour un handle. |
 | `tools/dex_strings.py` | Recherche par regex dans les chaînes des fichiers `.dex` d'une APK. |
